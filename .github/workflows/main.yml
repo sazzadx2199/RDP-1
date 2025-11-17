@@ -26,22 +26,39 @@ jobs:
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
                            -Name "SecurityLayer" -Value 1 -Force
           
-          # Fix RDP listener
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                           -Name "LanAdapter" -Value 0 -Force
-          
           # Performance tweaks
           Set-ItemProperty -Path "HKCU:\Control Panel\Desktop" -Name "MenuShowDelay" -Value 0
           Set-ItemProperty -Path "HKCU:\Control Panel\Desktop\WindowMetrics" -Name "MinAnimate" -Value 0
 
-      - name: Create User and Set Password
+      - name: Create User and Set Password (FIXED)
         run: |
-          # Create secure password
-          Add-Type -AssemblyName System.Web
-          $password = [System.Web.Security.Membership]::GeneratePassword(16, 4)
-          $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
+          # FIXED: Use alternative password generation method
+          $charSets = @{
+              Lowercase = 'abcdefghijklmnopqrstuvwxyz'
+              Uppercase = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+              Numbers = '0123456789'
+              Special = '!@#$%^&*'
+          }
+          
+          # Generate secure password (16 characters)
+          $password = ""
+          $password += $charSets.Lowercase[(Get-Random -Maximum $charSets.Lowercase.Length)]
+          $password += $charSets.Uppercase[(Get-Random -Maximum $charSets.Uppercase.Length)]
+          $password += $charSets.Numbers[(Get-Random -Maximum $charSets.Numbers.Length)]
+          $password += $charSets.Special[(Get-Random -Maximum $charSets.Special.Length)]
+          
+          # Add remaining random characters
+          $allChars = $charSets.Lowercase + $charSets.Uppercase + $charSets.Numbers + $charSets.Special
+          for ($i = $password.Length; $i -lt 16; $i++) {
+              $password += $allChars[(Get-Random -Maximum $allChars.Length)]
+          }
+          
+          # Shuffle the password
+          $password = -join ($password.ToCharArray() | Sort-Object {Get-Random})
           
           # Create user
+          $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
+          
           New-LocalUser -Name "rdpuser" `
                         -Password $securePassword `
                         -FullName "RDP User" `
@@ -56,8 +73,8 @@ jobs:
           echo "RDP_USERNAME=rdpuser" >> $env:GITHUB_ENV
           echo "RDP_PASSWORD=$password" >> $env:GITHUB_ENV
           
-          Write-Host "User created: rdpuser"
-          Write-Host "Password: $password"
+          Write-Host "✓ User created: rdpuser"
+          Write-Host "✓ Password generated successfully"
 
       - name: Install and Configure Tailscale
         run: |
@@ -70,8 +87,7 @@ jobs:
           Start-Process msiexec.exe -Wait -ArgumentList @(
             "/i", "`"$installerPath`"",
             "/quiet",
-            "/norestart",
-            "LAUNCHBROWSER=0"
+            "/norestart"
           )
           
           # Remove installer
@@ -79,6 +95,7 @@ jobs:
           
           # Wait for service to start
           Start-Sleep -Seconds 10
+          Write-Host "✓ Tailscale installed successfully"
 
       - name: Connect to Tailscale Network
         run: |
@@ -102,9 +119,9 @@ jobs:
           
           if ($tailscaleIP) {
               echo "TAILSCALE_IP=$tailscaleIP" >> $env:GITHUB_ENV
-              Write-Host "Tailscale IP: $tailscaleIP"
+              Write-Host "✓ Tailscale IP: $tailscaleIP"
           } else {
-              Write-Host "Could not get Tailscale IP, but continuing..."
+              Write-Host "⚠ Could not get Tailscale IP, but continuing..."
           }
 
       - name: Final RDP Configuration and Test
@@ -112,14 +129,14 @@ jobs:
           # Restart RDP services
           Restart-Service -Name "TermService" -Force
           Start-Service -Name "SessionEnv" -ErrorAction SilentlyContinue
-          Start-Service -Name "UmRdpService" -ErrorAction SilentlyContinue
           
-          # Add firewall rule for RDP (re-enable firewall)
+          # Add firewall rule for RDP
           Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled True
           netsh advfirewall firewall add rule name="Open RDP Port" `
             dir=in action=allow protocol=TCP localport=3389
           
           # Test RDP locally
+          Start-Sleep -Seconds 5
           $rdpCheck = Get-NetTCPConnection -LocalPort 3389 -ErrorAction SilentlyContinue
           if ($rdpCheck) {
               Write-Host "✓ RDP is listening on port 3389"
@@ -127,12 +144,7 @@ jobs:
               Write-Host "✗ RDP is not listening locally"
           }
           
-          # Display network information
-          Write-Host "Network Adapters:"
-          Get-NetIPAddress | Where-Object {$_.IPAddress -like "100.*"} | Format-Table
-          
-          Write-Host "Tailscale Status:"
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" status
+          Write-Host "✓ RDP configuration completed"
 
       - name: Display Connection Information
         run: |
@@ -141,9 +153,8 @@ jobs:
           Write-Host "           RDP CONNECTION INFORMATION"
           Write-Host "================================================"
           
-          # Get all possible IPs
+          # Get IP information
           $tailscaleIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-          $publicIP = (Invoke-WebRequest -Uri "https://api.ipify.org" -UseBasicParsing).Content
           $localIPs = Get-NetIPAddress | Where-Object {$_.IPAddress -like "100.*"} | Select-Object -ExpandProperty IPAddress
           
           Write-Host "Try connecting with these IPs:"
@@ -155,7 +166,6 @@ jobs:
                   Write-Host "Local Tailscale : $ip"
               }
           }
-          Write-Host "Public IP       : $publicIP"
           Write-Host ""
           Write-Host "Username        : $env:RDP_USERNAME"
           Write-Host "Password        : $env:RDP_PASSWORD"
@@ -163,17 +173,21 @@ jobs:
           Write-Host "RDP Service Status:"
           Get-Service TermService | Format-Table Name, Status -AutoSize
           Write-Host "================================================"
+          Write-Host ""
+          Write-Host "📝 Copy the password above and use it to connect via RDP"
+          Write-Host ""
           
-          # Keep the runner alive and show status
-          $counter = 0
-          while ($counter -lt 180) {  # 3 hours max
+          # Keep the runner alive
+          $hours = 0
+          while ($hours -lt 6) {  # 6 hours max
               $tsStatus = & "$env:ProgramFiles\Tailscale\tailscale.exe" status --json | ConvertFrom-Json
               $rdpPort = Test-NetConnection -ComputerName 127.0.0.1 -Port 3389 -WarningAction SilentlyContinue
               
               Write-Host "[$(Get-Date -Format 'HH:mm:ss')] " -NoNewline
-              Write-Host "Tailscale: $($tsStatus.BackendState) " -NoNewline -ForegroundColor $(if ($tsStatus.BackendState -eq 'Running') { 'Green' } else { 'Red' })
-              Write-Host "RDP Port: $(if ($rdpPort.TcpTestSucceeded) { 'OPEN' } else { 'CLOSED' })" -ForegroundColor $(if ($rdpPort.TcpTestSucceeded) { 'Green' } else { 'Red' })
+              Write-Host "Status: " -NoNewline
+              Write-Host "Tailscale($($tsStatus.BackendState)) " -NoNewline -ForegroundColor $(if ($tsStatus.BackendState -eq 'Running') { 'Green' } else { 'Yellow' })
+              Write-Host "RDP($(if ($rdpPort.TcpTestSucceeded) { 'OPEN' } else { 'CLOSED' }))" -ForegroundColor $(if ($rdpPort.TcpTestSucceeded) { 'Green' } else { 'Red' })
               
-              $counter++
+              $hours++
               Start-Sleep -Seconds 60
           }
