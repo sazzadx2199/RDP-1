@@ -1,4 +1,4 @@
-name: Ultimate Professional Secure RDP
+name: Lightweight Professional Secure RDP
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
 jobs:
   secure-rdp:
     runs-on: windows-latest
-    timeout-minutes: 7200
+    timeout-minutes: 3600
 
     steps:
       - name: Configure Secure RDP + Performance Tweaks
@@ -14,7 +14,7 @@ jobs:
           # Enable RDP
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
                            -Name "fDenyTSConnections" -Value 0 -Force
-          # Enable NLA
+          # Enable Network Level Authentication
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
                            -Name "UserAuthentication" -Value 1 -Force
           # Enable clipboard & file transfer
@@ -26,7 +26,7 @@ jobs:
           netsh advfirewall firewall delete rule name="RDP-Tailscale"
           netsh advfirewall firewall add rule name="RDP-Tailscale" `
               dir=in action=allow protocol=TCP localport=3389 remoteip=100.64.0.0/10
-          # Performance tweaks
+          # Ultra-low latency tweaks
           Set-ItemProperty -Path "HKCU:\Control Panel\Desktop" -Name "MenuShowDelay" -Value 0
           Set-ItemProperty -Path "HKCU:\Control Panel\Desktop\WindowMetrics" -Name "MinAnimate" -Value 0
           Set-ItemProperty -Path "HKCU:\Control Panel\Desktop" -Name "DragFullWindows" -Value 0
@@ -52,7 +52,7 @@ jobs:
           Remove-Item $path -Force
           & "$env:ProgramFiles\Tailscale\tailscale.exe" up `
               --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} `
-              --hostname=ultimate-rdp-$env:GITHUB_RUN_NUMBER `
+              --hostname=lightweight-rdp-$env:GITHUB_RUN_NUMBER `
               --accept-routes --exit-node=${{ secrets.TAILSCALE_EXIT_NODE }}
           # Wait for IP
           $ip = $null
@@ -60,27 +60,12 @@ jobs:
           if (-not $ip) { Write-Error "Tailscale IP not assigned"; exit 1 }
           echo "TAILSCALE_IP=$ip" >> $env:GITHUB_ENV
 
-      - name: Install Chocolatey & Dev Tools
+      - name: Install Google Chrome
         run: |
           Set-ExecutionPolicy Bypass -Scope Process -Force
-          [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
           iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
-          choco install googlechrome -y --no-progress
-          choco install vscode -y --no-progress
-          choco install nodejs-lts -y --no-progress
-          choco install python -y --no-progress
-          choco install git -y --no-progress
-          choco install docker-desktop -y --no-progress
-          choco install postman -y --no-progress
-          choco install jupyter -y --no-progress
-
-      - name: Install VSCode Extensions
-        run: |
-          code --install-extension ms-python.python
-          code --install-extension ms-vscode.cpptools
-          code --install-extension eamodio.gitlens
-          code --install-extension ms-vscode-remote.remote-containers
-          code --install-extension ms-toolsai.jupyter
+          choco install googlechrome -y --source=https://community.chocolatey.org/api/v2/
 
       - name: Verify RDP Connectivity
         run: |
@@ -90,15 +75,15 @@ jobs:
       - name: Auto-Launch RDP Session Info
         run: |
           Write-Host ""
-          Write-Host "======= ULTIMATE PROFESSIONAL SECURE RDP ======="
+          Write-Host "======= LIGHTWEIGHT PROFESSIONAL SECURE RDP ======="
           Write-Host "IP Address : $env:TAILSCALE_IP"
           Write-Host "Username   : sazzadx21"
           Write-Host "Full Name  : Sazzad Islam"
           Write-Host "Password   : $env:RDP_PASSWORD"
           Write-Host "Clipboard & File Sharing ENABLED"
-          Write-Host "Dev Tools Installed: Chrome, VSCode, Node, Python, Git, Docker, Postman, Jupyter"
+          Write-Host "Browser Installed: Google Chrome"
           Write-Host "Ultra-Low Latency + Performance Tweaks Applied"
-          Write-Host "==============================================="
+          Write-Host "=================================================="
           Write-Host ""
           while ($true) {
               Write-Host "[$(Get-Date)] RDP Active..."
