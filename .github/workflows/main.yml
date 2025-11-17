@@ -1,0 +1,106 @@
+name: Ultimate Professional Secure RDP
+
+on:
+  workflow_dispatch:
+
+jobs:
+  secure-rdp:
+    runs-on: windows-latest
+    timeout-minutes: 7200
+
+    steps:
+      - name: Configure Secure RDP + Performance Tweaks
+        run: |
+          # Enable RDP
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+                           -Name "fDenyTSConnections" -Value 0 -Force
+          # Enable NLA
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                           -Name "UserAuthentication" -Value 1 -Force
+          # Enable clipboard & file transfer
+          Set-ItemProperty -Path 'HKLM:\Software\Policies\Microsoft\Windows NT\Terminal Services' `
+                           -Name "fDisableClip" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\Software\Policies\Microsoft\Windows NT\Terminal Services' `
+                           -Name "fDisableDriveRedir" -Value 0 -Force
+          # Firewall: only Tailscale subnet
+          netsh advfirewall firewall delete rule name="RDP-Tailscale"
+          netsh advfirewall firewall add rule name="RDP-Tailscale" `
+              dir=in action=allow protocol=TCP localport=3389 remoteip=100.64.0.0/10
+          # Performance tweaks
+          Set-ItemProperty -Path "HKCU:\Control Panel\Desktop" -Name "MenuShowDelay" -Value 0
+          Set-ItemProperty -Path "HKCU:\Control Panel\Desktop\WindowMetrics" -Name "MinAnimate" -Value 0
+          Set-ItemProperty -Path "HKCU:\Control Panel\Desktop" -Name "DragFullWindows" -Value 0
+          Restart-Service -Name TermService -Force
+
+      - name: Create Professional RDP User (sazzadx21)
+        run: |
+          Add-Type -AssemblyName System.Security
+          $sets = @(48..57 + 65..90 + 97..122 + 33..47 + 58..64 + 91..96 + 123..126)
+          $password = -join ((1..16) | ForEach-Object { [char](Get-Random -InputObject ($sets | Get-Random)) })
+          $secure = ConvertTo-SecureString $password -AsPlainText -Force
+          New-LocalUser -Name "sazzadx21" -Password $secure -FullName "Sazzad Islam" -AccountNeverExpires
+          Add-LocalGroupMember -Group "Administrators" -Member "sazzadx21"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "sazzadx21"
+          echo "RDP_PASSWORD=$password" >> $env:GITHUB_ENV
+
+      - name: Install Tailscale + Optimize Routing
+        run: |
+          $url = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          $path = "$env:TEMP\tailscale.msi"
+          Invoke-WebRequest -Uri $url -OutFile $path
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$path`"", "/quiet", "/norestart" -Wait
+          Remove-Item $path -Force
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up `
+              --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} `
+              --hostname=ultimate-rdp-$env:GITHUB_RUN_NUMBER `
+              --accept-routes --exit-node=${{ secrets.TAILSCALE_EXIT_NODE }}
+          # Wait for IP
+          $ip = $null
+          for ($i=0; $i -lt 10 -and !$ip; $i++) { $ip = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4; Start-Sleep -Seconds 3 }
+          if (-not $ip) { Write-Error "Tailscale IP not assigned"; exit 1 }
+          echo "TAILSCALE_IP=$ip" >> $env:GITHUB_ENV
+
+      - name: Install Chocolatey & Dev Tools
+        run: |
+          Set-ExecutionPolicy Bypass -Scope Process -Force
+          [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+          iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+          choco install googlechrome -y --no-progress
+          choco install vscode -y --no-progress
+          choco install nodejs-lts -y --no-progress
+          choco install python -y --no-progress
+          choco install git -y --no-progress
+          choco install docker-desktop -y --no-progress
+          choco install postman -y --no-progress
+          choco install jupyter -y --no-progress
+
+      - name: Install VSCode Extensions
+        run: |
+          code --install-extension ms-python.python
+          code --install-extension ms-vscode.cpptools
+          code --install-extension eamodio.gitlens
+          code --install-extension ms-vscode-remote.remote-containers
+          code --install-extension ms-toolsai.jupyter
+
+      - name: Verify RDP Connectivity
+        run: |
+          $test = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
+          if (-not $test.TcpTestSucceeded) { Write-Error "RDP port unreachable"; exit 1 }
+
+      - name: Auto-Launch RDP Session Info
+        run: |
+          Write-Host ""
+          Write-Host "======= ULTIMATE PROFESSIONAL SECURE RDP ======="
+          Write-Host "IP Address : $env:TAILSCALE_IP"
+          Write-Host "Username   : sazzadx21"
+          Write-Host "Full Name  : Sazzad Islam"
+          Write-Host "Password   : $env:RDP_PASSWORD"
+          Write-Host "Clipboard & File Sharing ENABLED"
+          Write-Host "Dev Tools Installed: Chrome, VSCode, Node, Python, Git, Docker, Postman, Jupyter"
+          Write-Host "Ultra-Low Latency + Performance Tweaks Applied"
+          Write-Host "==============================================="
+          Write-Host ""
+          while ($true) {
+              Write-Host "[$(Get-Date)] RDP Active..."
+              Start-Sleep -Seconds 120
+          }
