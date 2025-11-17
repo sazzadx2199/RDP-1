@@ -1,4 +1,4 @@
-name: Fixed Lightweight Professional Secure RDP
+name: Lightweight Professional Secure RDP
 
 on:
   workflow_dispatch:
@@ -9,185 +9,83 @@ jobs:
     timeout-minutes: 3600
 
     steps:
-      - name: Configure RDP with Enhanced Settings
+      - name: Configure Secure RDP + Performance Tweaks
         run: |
-          # Stop and disable Windows Firewall temporarily for testing
-          Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled False
-          
-          # Enable RDP with proper settings
+          # Enable RDP
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
                            -Name "fDenyTSConnections" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-                           -Name "AllowTSConnections" -Value 1 -Force
-          
-          # NLA Configuration
+          # Enable Network Level Authentication
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
                            -Name "UserAuthentication" -Value 1 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                           -Name "SecurityLayer" -Value 1 -Force
-          
-          # Performance tweaks
+          # Enable clipboard & file transfer
+          Set-ItemProperty -Path 'HKLM:\Software\Policies\Microsoft\Windows NT\Terminal Services' `
+                           -Name "fDisableClip" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\Software\Policies\Microsoft\Windows NT\Terminal Services' `
+                           -Name "fDisableDriveRedir" -Value 0 -Force
+          # Firewall: only Tailscale subnet
+          netsh advfirewall firewall delete rule name="RDP-Tailscale"
+          netsh advfirewall firewall add rule name="RDP-Tailscale" `
+              dir=in action=allow protocol=TCP localport=3389 remoteip=100.64.0.0/10
+          # Ultra-low latency tweaks
           Set-ItemProperty -Path "HKCU:\Control Panel\Desktop" -Name "MenuShowDelay" -Value 0
           Set-ItemProperty -Path "HKCU:\Control Panel\Desktop\WindowMetrics" -Name "MinAnimate" -Value 0
+          Set-ItemProperty -Path "HKCU:\Control Panel\Desktop" -Name "DragFullWindows" -Value 0
+          Restart-Service -Name TermService -Force
 
-      - name: Create User and Set Password (FIXED)
+      - name: Create Professional RDP User (sazzadx21)
         run: |
-          # FIXED: Use alternative password generation method
-          $charSets = @{
-              Lowercase = 'abcdefghijklmnopqrstuvwxyz'
-              Uppercase = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
-              Numbers = '0123456789'
-              Special = '!@#$%^&*'
-          }
-          
-          # Generate secure password (16 characters)
-          $password = ""
-          $password += $charSets.Lowercase[(Get-Random -Maximum $charSets.Lowercase.Length)]
-          $password += $charSets.Uppercase[(Get-Random -Maximum $charSets.Uppercase.Length)]
-          $password += $charSets.Numbers[(Get-Random -Maximum $charSets.Numbers.Length)]
-          $password += $charSets.Special[(Get-Random -Maximum $charSets.Special.Length)]
-          
-          # Add remaining random characters
-          $allChars = $charSets.Lowercase + $charSets.Uppercase + $charSets.Numbers + $charSets.Special
-          for ($i = $password.Length; $i -lt 16; $i++) {
-              $password += $allChars[(Get-Random -Maximum $allChars.Length)]
-          }
-          
-          # Shuffle the password
-          $password = -join ($password.ToCharArray() | Sort-Object {Get-Random})
-          
-          # Create user
-          $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
-          
-          New-LocalUser -Name "rdpuser" `
-                        -Password $securePassword `
-                        -FullName "RDP User" `
-                        -Description "Temporary RDP User" `
-                        -AccountNeverExpires
-          
-          # Add to required groups
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "rdpuser"
-          Add-LocalGroupMember -Group "Administrators" -Member "rdpuser"
-          
-          # Store credentials
-          echo "RDP_USERNAME=rdpuser" >> $env:GITHUB_ENV
+          Add-Type -AssemblyName System.Security
+          $sets = @(48..57 + 65..90 + 97..122 + 33..47 + 58..64 + 91..96 + 123..126)
+          $password = -join ((1..16) | ForEach-Object { [char](Get-Random -InputObject ($sets | Get-Random)) })
+          $secure = ConvertTo-SecureString $password -AsPlainText -Force
+          New-LocalUser -Name "sazzadx21" -Password $secure -FullName "Sazzad Islam" -AccountNeverExpires
+          Add-LocalGroupMember -Group "Administrators" -Member "sazzadx21"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "sazzadx21"
           echo "RDP_PASSWORD=$password" >> $env:GITHUB_ENV
-          
-          Write-Host "✓ User created: rdpuser"
-          Write-Host "✓ Password generated successfully"
 
-      - name: Install and Configure Tailscale
+      - name: Install Tailscale + Optimize Routing
         run: |
-          # Download Tailscale
-          $tailscaleUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-amd64.msi"
-          $installerPath = "$env:TEMP\tailscale.msi"
-          Invoke-WebRequest -Uri $tailscaleUrl -OutFile $installerPath
-          
-          # Install silently
-          Start-Process msiexec.exe -Wait -ArgumentList @(
-            "/i", "`"$installerPath`"",
-            "/quiet",
-            "/norestart"
-          )
-          
-          # Remove installer
-          Remove-Item $installerPath -Force
-          
-          # Wait for service to start
-          Start-Sleep -Seconds 10
-          Write-Host "✓ Tailscale installed successfully"
-
-      - name: Connect to Tailscale Network
-        run: |
-          # Authenticate with Tailscale
+          $url = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          $path = "$env:TEMP\tailscale.msi"
+          Invoke-WebRequest -Uri $url -OutFile $path
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$path`"", "/quiet", "/norestart" -Wait
+          Remove-Item $path -Force
           & "$env:ProgramFiles\Tailscale\tailscale.exe" up `
-            --auth-key=${{ secrets.TAILSCALE_AUTH_KEY }} `
-            --hostname="github-rdp-$env:GITHUB_RUN_ID" `
-            --accept-routes `
-            --accept-dns=false
-          
-          # Wait for connection
-          Start-Sleep -Seconds 10
-          
-          # Get Tailscale IP
-          $tailscaleIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-          if (-not $tailscaleIP) {
-              Write-Host "Waiting for Tailscale IP..."
-              Start-Sleep -Seconds 10
-              $tailscaleIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-          }
-          
-          if ($tailscaleIP) {
-              echo "TAILSCALE_IP=$tailscaleIP" >> $env:GITHUB_ENV
-              Write-Host "✓ Tailscale IP: $tailscaleIP"
-          } else {
-              Write-Host "⚠ Could not get Tailscale IP, but continuing..."
-          }
+              --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} `
+              --hostname=lightweight-rdp-$env:GITHUB_RUN_NUMBER `
+              --accept-routes --exit-node=${{ secrets.TAILSCALE_EXIT_NODE }}
+          # Wait for IP
+          $ip = $null
+          for ($i=0; $i -lt 10 -and !$ip; $i++) { $ip = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4; Start-Sleep -Seconds 3 }
+          if (-not $ip) { Write-Error "Tailscale IP not assigned"; exit 1 }
+          echo "TAILSCALE_IP=$ip" >> $env:GITHUB_ENV
 
-      - name: Final RDP Configuration and Test
+      - name: Install Google Chrome
         run: |
-          # Restart RDP services
-          Restart-Service -Name "TermService" -Force
-          Start-Service -Name "SessionEnv" -ErrorAction SilentlyContinue
-          
-          # Add firewall rule for RDP
-          Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled True
-          netsh advfirewall firewall add rule name="Open RDP Port" `
-            dir=in action=allow protocol=TCP localport=3389
-          
-          # Test RDP locally
-          Start-Sleep -Seconds 5
-          $rdpCheck = Get-NetTCPConnection -LocalPort 3389 -ErrorAction SilentlyContinue
-          if ($rdpCheck) {
-              Write-Host "✓ RDP is listening on port 3389"
-          } else {
-              Write-Host "✗ RDP is not listening locally"
-          }
-          
-          Write-Host "✓ RDP configuration completed"
+          Set-ExecutionPolicy Bypass -Scope Process -Force
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+          choco install googlechrome -y --source=https://community.chocolatey.org/api/v2/
 
-      - name: Display Connection Information
+      - name: Verify RDP Connectivity
+        run: |
+          $test = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
+          if (-not $test.TcpTestSucceeded) { Write-Error "RDP port unreachable"; exit 1 }
+
+      - name: Auto-Launch RDP Session Info
         run: |
           Write-Host ""
-          Write-Host "================================================"
-          Write-Host "           RDP CONNECTION INFORMATION"
-          Write-Host "================================================"
-          
-          # Get IP information
-          $tailscaleIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-          $localIPs = Get-NetIPAddress | Where-Object {$_.IPAddress -like "100.*"} | Select-Object -ExpandProperty IPAddress
-          
-          Write-Host "Try connecting with these IPs:"
-          if ($tailscaleIP) {
-              Write-Host "Tailscale IP    : $tailscaleIP"
-          }
-          if ($localIPs) {
-              foreach ($ip in $localIPs) {
-                  Write-Host "Local Tailscale : $ip"
-              }
-          }
+          Write-Host "======= LIGHTWEIGHT PROFESSIONAL SECURE RDP ======="
+          Write-Host "IP Address : $env:TAILSCALE_IP"
+          Write-Host "Username   : sazzadx21"
+          Write-Host "Full Name  : Sazzad Islam"
+          Write-Host "Password   : $env:RDP_PASSWORD"
+          Write-Host "Clipboard & File Sharing ENABLED"
+          Write-Host "Browser Installed: Google Chrome"
+          Write-Host "Ultra-Low Latency + Performance Tweaks Applied"
+          Write-Host "=================================================="
           Write-Host ""
-          Write-Host "Username        : $env:RDP_USERNAME"
-          Write-Host "Password        : $env:RDP_PASSWORD"
-          Write-Host ""
-          Write-Host "RDP Service Status:"
-          Get-Service TermService | Format-Table Name, Status -AutoSize
-          Write-Host "================================================"
-          Write-Host ""
-          Write-Host "📝 Copy the password above and use it to connect via RDP"
-          Write-Host ""
-          
-          # Keep the runner alive
-          $hours = 0
-          while ($hours -lt 6) {  # 6 hours max
-              $tsStatus = & "$env:ProgramFiles\Tailscale\tailscale.exe" status --json | ConvertFrom-Json
-              $rdpPort = Test-NetConnection -ComputerName 127.0.0.1 -Port 3389 -WarningAction SilentlyContinue
-              
-              Write-Host "[$(Get-Date -Format 'HH:mm:ss')] " -NoNewline
-              Write-Host "Status: " -NoNewline
-              Write-Host "Tailscale($($tsStatus.BackendState)) " -NoNewline -ForegroundColor $(if ($tsStatus.BackendState -eq 'Running') { 'Green' } else { 'Yellow' })
-              Write-Host "RDP($(if ($rdpPort.TcpTestSucceeded) { 'OPEN' } else { 'CLOSED' }))" -ForegroundColor $(if ($rdpPort.TcpTestSucceeded) { 'Green' } else { 'Red' })
-              
-              $hours++
-              Start-Sleep -Seconds 60
+          while ($true) {
+              Write-Host "[$(Get-Date)] RDP Active..."
+              Start-Sleep -Seconds 120
           }
